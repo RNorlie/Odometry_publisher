@@ -1,5 +1,6 @@
 #include "ros/ros.h"
 #include "std_msgs/String.h"
+#include "std_msgs/Float64.h"
 #include "geometry_msgs/TwistStamped.h"
 
 #include <cmath>
@@ -21,8 +22,15 @@
 #define max_pos_index 1
 #define max_vel_index 1
 #define dt 0.050
+#define publish_freq 20.0
+#define read_freq 40.0
+
 
 int serial_port = open("/dev/ttyUSB0", O_RDWR);
+
+double linear_vel_x = 0;
+double linear_vel_y = 0;
+double angular_vel_z = 0;
 
 int parse_bytes(char * buffer, int index)
 {
@@ -35,13 +43,13 @@ class EncoderReader
 public:
     EncoderReader(ros::NodeHandle *n)
     {
-        odom_publisher = n->advertise<geometry_msgs::TwistStamped>("robot/velocity", 2);
+        odom_publisher = n->advertise<geometry_msgs::TwistStamped>("robot/velocity", 1);
     }
 
     void read_timer_callback()
     {
-	clock_t start, end;
-	start = clock();
+	//clock_t start, end;
+	//start = clock();
 
         static int pos_array [4];
         static float vel_array [4];
@@ -57,30 +65,31 @@ public:
         char read_buf [256];
         int num_bytes_read = read(serial_port, &read_buf, sizeof(read_buf));
 
-        if (num_bytes_read != 12)
-           return;
-        printf("Read %i bytes. Received message: %s\n", num_bytes_read, read_buf);
-        int i = 0;
 
-        absolute_encoder_pulses = parse_bytes(read_buf, i);
-        if(initial_absolute_encoder_pulses == INT_MAX)
-            initial_absolute_encoder_pulses = absolute_encoder_pulses;
-        printf("Abs_enc as an int: %i\n", absolute_encoder_pulses);
-        i+=4;
+        if (num_bytes_read == 12) { //if invalid reading, do not update encoder values
 
-        //convert incremental encoder_a string to int
-        traction_encoder_pulses_forward = parse_bytes(read_buf, i);
-        printf("inc_enc_a as an int: %i\n", traction_encoder_pulses_forward);
-        i+=4;
+            printf("Read %i bytes. Received message: %s\n", num_bytes_read, read_buf);
+            int i = 0;
 
-        //convert incremental encoder_b string to int
-        traction_encoder_pulses_backward = parse_bytes(read_buf, i);
-        printf("inc_enc_b as an int: %i\n", traction_encoder_pulses_backward);
+            absolute_encoder_pulses = parse_bytes(read_buf, i);
+            if(initial_absolute_encoder_pulses == INT_MAX)
+                initial_absolute_encoder_pulses = absolute_encoder_pulses;
+            printf("Abs_enc as an int: %i\n", absolute_encoder_pulses);
+            i+=4;
+
+            traction_encoder_pulses_forward = parse_bytes(read_buf, i);
+            printf("inc_enc_a as an int: %i\n", traction_encoder_pulses_forward);
+            i+=4;
+
+            traction_encoder_pulses_backward = parse_bytes(read_buf, i);
+            printf("inc_enc_b as an int: %i\n", traction_encoder_pulses_backward);
+
+        }
 
         float current_pos = ((traction_encoder_pulses_forward - traction_encoder_pulses_backward)*TRAC_SCALER);
         float alpha = (((float)absolute_encoder_pulses - (float)initial_absolute_encoder_pulses)/ABS_SCALER);
 
-        printf("alpha = %.6f\n", alpha);
+//        printf("alpha = %.6f\n", alpha);
 
         //populate pos_array
 
@@ -118,8 +127,8 @@ public:
                 {
                     sum += vel_array[i];
                 }
-                float average_velocity = sum / (float)max_vel_index+1;
-		printf("average velocity = %.6f\n", average_velocity);
+                float average_velocity = sum / (max_vel_index + 1);
+//		printf("average velocity = %.6f\n", average_velocity);
             }
         }
 	//end = clock();
@@ -129,6 +138,7 @@ public:
 
     void publish_timer_callback()
     {
+
         static int count = 0;
         geometry_msgs::TwistStamped twist_stamped_msg;
 
@@ -136,13 +146,13 @@ public:
         twist_stamped_msg.header.stamp = ros::Time::now();
         //twist_stamped_msg.header.frame_id =
 
-        twist_stamped_msg.twist.linear.x = 0;
-        twist_stamped_msg.twist.linear.y = 0;
+        twist_stamped_msg.twist.linear.x = linear_vel_x;
+        twist_stamped_msg.twist.linear.y = linear_vel_y;
         twist_stamped_msg.twist.linear.z = 0;
 
         twist_stamped_msg.twist.angular.x = 0;
         twist_stamped_msg.twist.angular.y = 0;
-        twist_stamped_msg.twist.angular.z = 0;
+        twist_stamped_msg.twist.angular.z = angular_vel_z;
 
         odom_publisher.publish(twist_stamped_msg);
         count++;
@@ -194,7 +204,7 @@ int main(int argc, char **argv)
     tty.c_oflag &= ~ONLCR;
 
     tty.c_cc[VTIME] = 0;
-    tty.c_cc[VMIN] = 12;
+    tty.c_cc[VMIN] = 1;
 
     cfsetispeed(&tty, B115200);
     cfsetospeed(&tty, B115200);
@@ -210,18 +220,3 @@ int main(int argc, char **argv)
 
     ros::spin();
 }
-
-/*
-
-    //x linear velocity in meters/?
-    //float linear_vel = 1000*(speed*(cos(alpha)));
-
-    //angular velocity in meters/?
-    //float angular_vel = 1000*((speed/d)*(sin(alpha)));
-
-*/
-
-//    int bytes_in_buf;
-//    ioctl(serial_port, FIONREAD, &bytes_in_buf);
-
-//    printf("There are %i bytes in the input buffer\n", bytes_in_buf);
