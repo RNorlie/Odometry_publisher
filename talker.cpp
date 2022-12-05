@@ -6,6 +6,7 @@
 #include <cmath>
 #include <fstream>
 #include <iostream>
+#include <array>
 
 #include <stdio.h>
 #include <string.h>
@@ -17,22 +18,47 @@
 #include <bits/stdc++.h>
 
 #define ABS_SCALER 20480
-#define TRAC_SCALER 0.58
+#define TRAC_SCALER 0.00058
 #define ABS_WRAP 16777215
-#define max_pos_index 1
-#define max_vel_index 1
-#define dt 0.050
+#define FRAME_LENGTH 10
+
+#define max_index 1
 #define publish_freq 20.0
 #define read_freq 40.0
 
-
 int serial_port = open("/dev/ttyUSB0", O_RDWR);
 
-double linear_vel_x = 0;
-double linear_vel_y = 0;
-double angular_vel_z = 0;
+double linear_vel_x = 0.0;
+double linear_vel_y = 0.0;
+double angular_vel_z = 0.0;
 
-int parse_bytes(char * buffer, int index)
+void print_array(double *array, int size)
+{
+    for(unsigned int i = 0; i < size+1; i++)
+    {
+	printf("array[%d] = %f\n", i, array[i]);
+    }
+}
+
+void shift_array(double *array, int size)
+{
+    for(unsigned int i = 0; i < size; i++)
+    {
+	array[i] = array[i+1];
+    }
+}
+
+double average_array(double *array, int size)
+{
+    double sum = 0;
+    for(unsigned int i = 0; i < size+1; i++)
+    {
+	sum += array[i];
+    }
+    return (sum / (double)(size+1));
+}
+
+int parse_bytes(char *buffer, int index)
 {
     int a = (int)(buffer[index] << 24 | buffer[index+1] << 16 | buffer[index+2] << 8 | buffer[index+3]);
     return a;
@@ -48,92 +74,115 @@ public:
 
     void read_timer_callback()
     {
-	//clock_t start, end;
-	//start = clock();
-
-        static int pos_array [4];
-        static float vel_array [4];
-
-        static int pos_index = 0;
-        static int vel_index = 0;
-
-        static int initial_absolute_encoder_pulses = INT_MAX;
-        static int absolute_encoder_pulses = 0;
-        static int traction_encoder_pulses_forward = 0;
-        static int traction_encoder_pulses_backward = 0;
+	//ros::Time start_read = ros::Time::now();
 
         char read_buf [256];
         int num_bytes_read = read(serial_port, &read_buf, sizeof(read_buf));
 
-
         if (num_bytes_read == 12) { //if invalid reading, do not update encoder values
 
-            printf("Read %i bytes. Received message: %s\n", num_bytes_read, read_buf);
-            int i = 0;
+            //printf("Read %i bytes. Received message: %s\n", num_bytes_read, read_buf);
+            unsigned int serial_index = 0;
 
-            absolute_encoder_pulses = parse_bytes(read_buf, i);
+            absolute_encoder_pulses = parse_bytes(read_buf, serial_index);
             if(initial_absolute_encoder_pulses == INT_MAX)
                 initial_absolute_encoder_pulses = absolute_encoder_pulses;
             printf("Abs_enc as an int: %i\n", absolute_encoder_pulses);
-            i+=4;
+            serial_index+=4;
 
-            traction_encoder_pulses_forward = parse_bytes(read_buf, i);
-            printf("inc_enc_a as an int: %i\n", traction_encoder_pulses_forward);
-            i+=4;
+            traction_encoder_pulses_backward = parse_bytes(read_buf, serial_index);
+            printf("inc_enc_a as an int: %i\n", traction_encoder_pulses_backward);
+            serial_index+=4;
 
-            traction_encoder_pulses_backward = parse_bytes(read_buf, i);
-            printf("inc_enc_b as an int: %i\n", traction_encoder_pulses_backward);
+            traction_encoder_pulses_forward = parse_bytes(read_buf, serial_index);
+            printf("inc_enc_b as an int: %i\n\n", traction_encoder_pulses_forward);
 
         }
 
-        float current_pos = ((traction_encoder_pulses_forward - traction_encoder_pulses_backward)*TRAC_SCALER);
-        float alpha = (((float)absolute_encoder_pulses - (float)initial_absolute_encoder_pulses)/ABS_SCALER);
+        double current_pos = (((double)traction_encoder_pulses_forward - (double)traction_encoder_pulses_backward)*TRAC_SCALER); //distance the drive wheel has travelled
+        double alpha = (((double)absolute_encoder_pulses - (double)initial_absolute_encoder_pulses)/ABS_SCALER); //angle of drive wheel
 
-//        printf("alpha = %.6f\n", alpha);
+	//printf("alpha = %.6f\n", alpha);
+	//printf("current_pos = %f\n", current_pos);
 
         //populate pos_array
 
-        if(pos_index <= max_pos_index) {
+        if(pos_index < max_index+1) {
             pos_array[pos_index] = current_pos;
             pos_index++;
-        }
-        else
-        {
-            for(int i = 0; i < max_pos_index; i++)
-            {
-                pos_array[i] = pos_array[i+1];
-            }
-            pos_array[max_pos_index] = current_pos;
+	    return;
         }
 
-        //populate vel_array
+	shift_array(pos_array, max_index);
+	pos_array[max_index] = current_pos;
 
-        if(pos_index > max_pos_index) {
-            float current_vel = ((float)pos_array[max_pos_index] - (float)pos_array[0]) / dt;
-            if(vel_index <= max_vel_index) {
-                vel_array[vel_index] = current_vel;
-                vel_index++;
-            }
-            else
-            {
-                float sum = 0;
-                for(int i = 0; i < max_vel_index; i++)
-                {
-                    vel_array[i] = vel_array[i+1];
-                }
-                vel_array[max_vel_index] = current_vel;
+        double dt = (ros::Time::now() - then).toSec(); //time passed since last velocity calculation
+	then = ros::Time::now();
 
-                for(int i = 0; i <= max_vel_index; i++)
-                {
-                    sum += vel_array[i];
-                }
-                float average_velocity = sum / (max_vel_index + 1);
-//		printf("average velocity = %.6f\n", average_velocity);
+	//printf("time elapsed = %f seconds\n", dt);
+
+	//populate velocity arrays
+
+	if(pos_index > max_index) {
+            double wheel_velocity = ((double)pos_array[max_index] - (double)pos_array[0]) / dt;
+
+	    //printf("wheel_velocity = %f\n", wheel_velocity);
+
+	    double current_x_velocity = wheel_velocity * cos(alpha + theta);
+	    double current_y_velocity = wheel_velocity * sin(alpha + theta);
+	    double current_angular_velocity = (wheel_velocity * sin(alpha)) / FRAME_LENGTH;
+
+	    //printf("theta = %f\n", theta);
+
+	    theta += current_angular_velocity * dt; //angle of truck heading
+
+	    //average linear x velocity
+
+            if(linear_x_index < max_index+1) {
+                linear_x_vel_array[linear_x_index] = current_x_velocity;
+                linear_x_index++;
+		return;
             }
+
+	    shift_array(linear_x_vel_array, max_index);
+            linear_x_vel_array[max_index] = current_x_velocity;
+
+            linear_vel_x = average_array(linear_x_vel_array, max_index);
+
+	    //average linear y velocity
+
+            if(linear_y_index < max_index+1) {
+                linear_y_vel_array[linear_y_index] = current_y_velocity;
+                linear_y_index++;
+		return;
+            }
+
+            shift_array(linear_y_vel_array, max_index);
+            linear_y_vel_array[max_index] = current_y_velocity;
+
+            linear_vel_y = average_array(linear_y_vel_array, max_index);
+
+	    //average angular z velocity
+
+            if(angular_index < max_index+1) {
+                angular_vel_array[angular_index] = current_angular_velocity;
+                angular_index++;
+		return;
+            }
+
+            shift_array(angular_vel_array, max_index);
+            angular_vel_array[max_index] = current_angular_velocity;
+
+            angular_vel_z = average_array(angular_vel_array, max_index);
+
+	    printf("x vel = %f\n", linear_vel_x);
+            printf("y vel = %f\n", linear_vel_y);
+            printf("z vel = %f\n", angular_vel_z);
+
         }
-	//end = clock();
-	//double time_taken = double(end - start) / double(1500000000);
-	//std::cout << time_taken << std::endl;
+	//ros::Time end_read = ros::Time::now();
+	//ros::Duration time_elapsed = end_read - start_read;
+	//printf("time elapsed = %f seconds\n", time_elapsed.toSec());
     }
 
     void publish_timer_callback()
@@ -157,14 +206,34 @@ public:
         odom_publisher.publish(twist_stamped_msg);
         count++;
 
-        printf("publishing!\n");
+        //printf("publishing!\n");
     }
 
 private:
+    double dt;
+
     ros::Publisher odom_publisher;
+    ros::Time start_time = ros::Time::now();
+    ros::Time then = start_time;
+
+    double pos_array [max_index+1];
+    double linear_x_vel_array [max_index+1];
+    double linear_y_vel_array [max_index+1];
+    double angular_vel_array [max_index+1];
+
+    int pos_index = 0;
+    int linear_x_index = 0;
+    int linear_y_index = 0;
+    int angular_index = 0;
+
+    int initial_absolute_encoder_pulses = INT_MAX;
+    int absolute_encoder_pulses = 0;
+    int traction_encoder_pulses_forward = 0;
+    int traction_encoder_pulses_backward = 0;
+
+    double theta = 0.0;
+
 };
-
-
 
 int main(int argc, char **argv)
 {
@@ -174,8 +243,8 @@ int main(int argc, char **argv)
 
     EncoderReader encoderReader(&n);
 
-    ros::Timer read_timer = n.createTimer(ros::Duration(0.1/40.0), std::bind(&EncoderReader::read_timer_callback, encoderReader));
-    ros::Timer publish_timer = n.createTimer(ros::Duration(0.1/20.0), std::bind(&EncoderReader::publish_timer_callback, encoderReader));
+    ros::Timer read_timer = n.createTimer(ros::Duration(0.1/read_freq), std::bind(&EncoderReader::read_timer_callback, encoderReader));
+    ros::Timer publish_timer = n.createTimer(ros::Duration(0.1/publish_freq), std::bind(&EncoderReader::publish_timer_callback, encoderReader));
 
     struct termios tty;
     if(tcgetattr(serial_port, &tty) != 0) {
@@ -204,7 +273,7 @@ int main(int argc, char **argv)
     tty.c_oflag &= ~ONLCR;
 
     tty.c_cc[VTIME] = 0;
-    tty.c_cc[VMIN] = 1;
+    tty.c_cc[VMIN] = 0;
 
     cfsetispeed(&tty, B115200);
     cfsetospeed(&tty, B115200);
